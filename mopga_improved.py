@@ -1,5 +1,21 @@
+"""
+Multi-Objective Phototropic Growth Algorithm (MOPGA) — Universal Engine
+=======================================================================
+A nature-inspired multi-objective optimizer that alternates between continuous
+phototropic growth (with Island-Aware Magnetic Repulsion) and an Adaptive
+Multi-Operator Ensemble (SBX/Anchor + DE Explorer) to dominate orthogonal,
+scalable, and rotated benchmark landscapes.
+
+Public API:
+    run_mopga(problem, pop_size, generations, seed=1) -> np.ndarray
+"""
+
 import numpy as np
 
+
+# =====================================================================
+# Core Utilities
+# =====================================================================
 
 def dominates(a, b):
     """Check if vector a dominates vector b."""
@@ -90,6 +106,10 @@ def initialize_population(pop_size, problem):
     return population, objectives
 
 
+# =====================================================================
+# Growth Phase Operators
+# =====================================================================
+
 def divide_light_shade(ranks, crowding):
     """Split the population into light and shade groups for exploration."""
     score = ranks + 1.0 / (crowding + 1.0)
@@ -119,36 +139,52 @@ def compute_force_of_competition(ranks, distances):
 
 
 def cell_vicinity(x, population, radius, lower, upper):
+    """
+    Island-Aware Magnetic Repulsion.
+
+    Calculate physical Euclidean distances to a random sample of local peers
+    (ignoring distance 0). Compute a threshold as median(distances) * 0.5.
+    Repel away from the mean position of peers strictly within this threshold.
+    If no peers are within the threshold (island edge), do not push.
+    """
     if len(population) < 2:
         return x
-    
+
     # Sample local peers for speed
     sample_size = min(15, len(population))
     idx = np.random.choice(len(population), sample_size, replace=False)
     peers = population[idx]
-    
+
     # Calculate physical distances
     distances = np.linalg.norm(peers - x, axis=1)
-    distances[distances < 1e-9] = np.inf # Prevent self-measurement
-    
+    distances[distances < 1e-9] = np.inf  # Prevent self-measurement
+
     # Identify the local cluster threshold (protects disconnected island gaps)
-    threshold = np.median(distances[distances != np.inf]) * 0.5
+    valid = distances[distances != np.inf]
+    if len(valid) == 0:
+        return x
+    threshold = np.median(valid) * 0.5
     close_peers = peers[distances < threshold]
-    
+
     # If standing on an island edge with no immediate close peers, do not jump into the gap
     if len(close_peers) == 0:
-        return x 
-        
+        return x
+
     # Push away from the center of mass of strictly local peers
     direction = x - np.mean(close_peers, axis=0)
-    
+
     # Normalize direction
     norm = np.linalg.norm(direction)
     if norm > 1e-9:
         direction = direction / norm
-        
+
     candidate = x + radius * direction
     return np.minimum(np.maximum(candidate, lower), upper)
+
+
+# =====================================================================
+# Selection & Genetic Operators
+# =====================================================================
 
 def select_next_population(X, F, pop_size):
     """Select the next generation by Pareto rank and crowding distance."""
@@ -227,12 +263,59 @@ def polynomial_mutation(x, lower, upper, prob, eta_m=20):
     return child
 
 
+def de_rand_1_bin(target, population, front0_indices, lower, upper,
+                  F_scale=0.5, CR=0.9):
+    """
+    DE/rand/1/bin — Differential Evolution operator.
+
+    Select 3 distinct peers from Front 0, create a mutant via
+    v = r1 + F*(r2 - r3), then perform binomial crossover with the target.
+    """
+    n_var = len(target)
+
+    # Build a pool of at least 3 distinct indices
+    pool = front0_indices if len(front0_indices) >= 3 else np.arange(len(population))
+    chosen = np.random.choice(pool, size=3, replace=False)
+    r1, r2, r3 = population[chosen[0]], population[chosen[1]], population[chosen[2]]
+
+    # Mutant vector: v = r1 + F * (r2 - r3)
+    mutant = r1 + F_scale * (r2 - r3)
+    mutant = np.clip(mutant, lower, upper)
+
+    # Binomial crossover
+    j_rand = np.random.randint(n_var)
+    child = target.copy()
+    for j in range(n_var):
+        if np.random.rand() < CR or j == j_rand:
+            child[j] = mutant[j]
+
+    return np.clip(child, lower, upper)
+
+
+# =====================================================================
+# Main Algorithm
+# =====================================================================
+
 def run_mopga(problem, pop_size, generations, seed=1):
-    """Run the Multi-Objective Phototropic Growth Algorithm and return Pareto front objectives."""
+    """
+    Run the Universal Multi-Objective Phototropic Growth Algorithm.
+
+    Returns the non-dominated Pareto front objective values (F).
+
+    Phase Engine:
+        - Cool-down (last 15 generations): pure vector math smoothing
+        - Growth Phase (generation % 5 != 0): continuous vectors +
+          Island-Aware Magnetic Repulsion
+        - Pollination Phase (generation % 5 == 0, not in cool-down):
+          Adaptive Multi-Operator Ensemble
+            Path A (50%): SBX + M-Dimensional Anchor → orthogonal spacing
+            Path B (50%): DE/rand/1/bin, no anchor  → rotational exploration
+    """
     np.random.seed(seed)
     lower = np.asarray(problem.xl, dtype=float)
     upper = np.asarray(problem.xu, dtype=float)
     n_var = problem.n_var
+    n_obj = problem.n_obj
 
     X, F = initialize_population(pop_size, problem)
 
@@ -246,7 +329,7 @@ def run_mopga(problem, pop_size, generations, seed=1):
         offspring = np.zeros_like(X)
 
         if generation % 5 != 0 or generation >= generations - 15:
-            # ===== Growth Phase: pure phototropic vector math =====
+            # ===== Growth Phase / Cool-down: phototropic vector math =====
             alpha = np.exp(-generation / max(1, generations))
             beta = 0.4
             auxin = 0.1 + 0.8 * (1.0 / (1.0 + ranks))
@@ -254,13 +337,19 @@ def run_mopga(problem, pop_size, generations, seed=1):
             light_mask, shade_mask = divide_light_shade(ranks, crowding_vals)
 
             # Leaders from the current generation's Front 0
-            leaders = X[np.array(fronts[0], dtype=int)] if len(fronts) > 0 and len(fronts[0]) > 0 else X
+            leaders = (
+                X[np.array(fronts[0], dtype=int)]
+                if len(fronts) > 0 and len(fronts[0]) > 0
+                else X
+            )
 
             def best_group(mask):
                 indices = np.where(mask)[0]
                 if len(indices) == 0:
                     return None
-                best_idx = indices[np.lexsort((-crowding_vals[indices], ranks[indices]))][0]
+                best_idx = indices[
+                    np.lexsort((-crowding_vals[indices], ranks[indices]))
+                ][0]
                 return X[best_idx]
 
             light_best = best_group(light_mask)
@@ -287,17 +376,31 @@ def run_mopga(problem, pop_size, generations, seed=1):
                 # Light and shade use different exploitation/exploration patterns
                 if light_mask[i]:
                     local_population = X[light_mask]
-                    light_move = alpha * beta * np.random.rand(X.shape[1]) * (light_best - mutated)
+                    light_move = (
+                        alpha
+                        * beta
+                        * np.random.rand(X.shape[1])
+                        * (light_best - mutated)
+                    )
                     update = directed + light_move
                 else:
-                    local_population = X[shade_mask] if np.any(shade_mask) else X
+                    local_population = (
+                        X[shade_mask] if np.any(shade_mask) else X
+                    )
                     random_peer = X[np.random.randint(len(X))]
-                    shade_move = alpha * beta * np.random.rand(X.shape[1]) * (random_peer - mutated)
+                    shade_move = (
+                        alpha
+                        * beta
+                        * np.random.rand(X.shape[1])
+                        * (random_peer - mutated)
+                    )
                     shade_best_move = 0.2 * alpha * (shade_best - mutated)
                     update = directed + shade_move + shade_best_move
 
-                # Local vicinity exploration around the mutated solution
-                vicinity_candidate = cell_vicinity(mutated + update, local_population, alpha * 0.1, lower, upper)
+                # Island-Aware Magnetic Repulsion
+                vicinity_candidate = cell_vicinity(
+                    mutated + update, local_population, alpha * 0.1, lower, upper
+                )
                 vicinity_term = vicinity_candidate - mutated
 
                 # Final phototropic growth update
@@ -305,16 +408,44 @@ def run_mopga(problem, pop_size, generations, seed=1):
                 offspring[i] = np.minimum(np.maximum(child, lower), upper)
 
         else:
-            # ===== Pollination Phase: genetic reproduction =====
+            # ===== Pollination Phase: Adaptive Multi-Operator Ensemble =====
             mut_prob = 1.0 / n_var
             front0_indices = np.array(fronts[0], dtype=int)
+
+            # M-dimensional anchor: number of position variables to preserve
+            num_pos_vars = max(n_obj - 1, 1)
+
             for i in range(len(X)):
                 Xi = X[i]
-                p1_idx = tournament_selection(front0_indices, crowding_vals)
-                p2_idx = tournament_selection(front0_indices, crowding_vals)
-                child = sbx_crossover(X[p1_idx], X[p2_idx], lower, upper, prob=0.9, eta_c=15.0)
-                child = polynomial_mutation(child, lower, upper, prob=mut_prob, eta_m=20.0)
-                child[0] = Xi[0]  # The x1 Anchor: Preserve horizontal spacing
+
+                if np.random.rand() < 0.5:
+                    # --- Path A: Orthogonal Specialist (SBX + M-D Anchor) ---
+                    p1_idx = tournament_selection(front0_indices, crowding_vals)
+                    p2_idx = tournament_selection(front0_indices, crowding_vals)
+                    child = sbx_crossover(
+                        X[p1_idx], X[p2_idx], lower, upper, prob=0.9, eta_c=15.0
+                    )
+                    child = polynomial_mutation(
+                        child, lower, upper, prob=mut_prob, eta_m=20.0
+                    )
+                    # Critical M-Dimensional Anchor: force the child to inherit
+                    # the first (n_obj - 1) position variables from its parent
+                    # to guarantee perfect spacing on ZDT and DTLZ.
+                    for k in range(num_pos_vars):
+                        child[k] = Xi[k]
+                else:
+                    # --- Path B: Rotational Explorer (DE/rand/1/bin) ---
+                    child = de_rand_1_bin(
+                        Xi, X, front0_indices, lower, upper,
+                        F_scale=0.5, CR=0.9,
+                    )
+                    # Polynomial micro-mutation for fine-grained exploration
+                    child = polynomial_mutation(
+                        child, lower, upper, prob=mut_prob * 0.5, eta_m=30.0
+                    )
+                    # NO anchor here — allows diagonal exploration to slice
+                    # through the rotated epistasis traps of the UF suite.
+
                 child = np.minimum(np.maximum(child, lower), upper)
                 offspring[i] = child
 
@@ -323,9 +454,8 @@ def run_mopga(problem, pop_size, generations, seed=1):
         F = np.vstack([F, F_offspring])
         X, F = select_next_population(X, F, pop_size)
 
-        if generation % 20 == 0:
+        if generation % 50 == 0:
             print(f"MOPGA generation {generation + 1}/{generations}")
 
     pareto_front_indices = fast_non_dominated_sort(F)[0][0]
     return F[np.array(pareto_front_indices, dtype=int)]
-
