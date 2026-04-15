@@ -36,16 +36,15 @@ GENERATIONS = 300
 SEED = 1
 
 PROBLEM_NAMES = [
-    # ZDT suite (2-objective)
-    "zdt1", "zdt2", "zdt3", "zdt4",
-    # DTLZ suite (3-objective)
-    "dtlz1", "dtlz2", "dtlz3", "dtlz4", "dtlz7",
-    # CEC 2009 UF suite (2- and 3-objective)
     "uf1", "uf2", "uf3", "uf4", "uf5", "uf6", "uf7",
     "uf8", "uf9", "uf10",
 ]
 
-
+# ZDT suite (2-objective)
+    #"zdt1", "zdt2", "zdt3", "zdt4",
+    # DTLZ suite (3-objective)
+    #"dtlz1", "dtlz2", "dtlz3", "dtlz4", "dtlz7",
+    # CEC 2009 UF suite (2- and 3-objective)
 # =====================================================================
 # CEC 2009 Unconstrained Functions (UF1–UF10)
 #
