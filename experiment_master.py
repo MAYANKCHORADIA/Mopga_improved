@@ -36,6 +36,8 @@ GENERATIONS = 300
 SEED = 1
 
 PROBLEM_NAMES = [
+    "zdt1", "zdt2", "zdt3", "zdt4",
+    "dtlz1", "dtlz2", "dtlz3", "dtlz4", "dtlz7",
     "uf1", "uf2", "uf3", "uf4", "uf5", "uf6", "uf7",
     "uf8", "uf9", "uf10",
 ]
